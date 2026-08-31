@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "551838289829",
+    "project_id": "garmentsapp-29109",
+    "storage_bucket": "garmentsapp-29109.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:551838289829:android:47c6b364afecd30685a24c",
+        "android_client_info": {
+          "package_name": "com.example.garment_measurement_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBYAHjGJLVMerOmdWX3KwvwR5TnxVqxB5Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
