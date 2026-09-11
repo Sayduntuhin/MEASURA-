@@ -85,76 +85,6 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
     }
   }
 
-  Future<void> _showApiKeyDialog() async {
-    final currentKey = await PdfScannerService.getSavedApiKey();
-    if (!mounted) return;
-    final controller = TextEditingController(text: currentKey);
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
-          children: [
-            Icon(Icons.key_rounded, color: AppColors.primaryBlue),
-            SizedBox(width: 10),
-            Text('AI Vision API Key', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Digital PDFs and Excel spreadsheets parse 100% offline.\n\nA Gemini API key is only needed for photo scans or flattened image PDFs.',
-              style: TextStyle(fontSize: 13, color: Colors.grey),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: controller,
-              decoration: InputDecoration(
-                labelText: 'Google AI Studio / Gemini Key',
-                hintText: 'AIzaSy...',
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-              ),
-              obscureText: true,
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Free keys available at aistudio.google.com',
-              style: TextStyle(fontSize: 11, color: AppColors.primaryBlue),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primaryBlue,
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () async {
-              await PdfScannerService.saveApiKey(controller.text.trim());
-              if (ctx.mounted) Navigator.pop(ctx);
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(controller.text.trim().isEmpty ? 'API key removed.' : 'API key saved securely on device.'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              }
-            },
-            child: const Text('Save Key'),
-          ),
-        ],
-      ),
-    );
-  }
-
   Future<void> _processFile({bool useExample = false}) async {
     if (!useExample && _selectedFile == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -327,13 +257,6 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text('Import Tech Pack Spec'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.key_rounded),
-            tooltip: 'AI Vision Key (Optional)',
-            onPressed: _showApiKeyDialog,
-          ),
-        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),

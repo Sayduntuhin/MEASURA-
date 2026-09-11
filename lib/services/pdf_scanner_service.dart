@@ -201,14 +201,14 @@ class PdfScannerService {
       }
     }
 
-    // 3. Fallback if no key available
+    // 3. Fallback if no digital text streams available
     if (ext == 'pdf') {
       throw ScannedPdfNeedsVisionException(
-        'Scanned image PDF detected. This PDF contains a photo/scan without selectable digital text.',
+        'Scanned or vector-outlined PDF detected. This PDF does not contain digital text streams. Please upload the original digital tech pack PDF or Excel (.xlsx / .csv) sheet.',
       );
     } else {
       throw ScannedPdfNeedsVisionException(
-        'Image files (PNG/JPG) require an AI Vision key to scan measurement tables into digital form.',
+        'Image files (PNG/JPG) do not contain digital text streams. Please upload the original digital tech pack PDF or Excel (.xlsx / .csv) sheet.',
       );
     }
   }
