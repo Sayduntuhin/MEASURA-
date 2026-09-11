@@ -149,6 +149,9 @@ class GarmentSpecSheet {
   /// Resolves the specific positive/negative tolerance for a POM,
   /// accounting for manual overrides, Kontoor categories, and waist >= 38" logic.
   PomTolerance getPomTolerance(String pomCode, {String? size}) {
+    if (size != null && customPomTolerances.containsKey('${pomCode}_$size')) {
+      return customPomTolerances['${pomCode}_$size']!;
+    }
     if (customPomTolerances.containsKey(pomCode)) {
       return customPomTolerances[pomCode]!;
     }

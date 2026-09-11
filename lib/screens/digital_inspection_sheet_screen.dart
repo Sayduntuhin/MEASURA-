@@ -32,6 +32,7 @@ class _DigitalInspectionSheetScreenState
 
   // Frozen / Docked Keypad state (Page 3 feature request)
   bool _dockKeypad = true;
+  bool _advanceTopToBottom = true; // Flow: Top-to-Bottom (garment inspection) vs Left-to-Right
   String? _activePomCode;
   String? _activeSize;
   int? _activeSampleIndex;
@@ -151,37 +152,88 @@ class _DigitalInspectionSheetScreenState
 
       // If docked keypad: auto-advance sample seamlessly without moving/reloading keypad
       if (_dockKeypad) {
-        if (sampleIndex < _specSheet.sampleCountPerSize) {
-          _activeSampleIndex = sampleIndex + 1;
-        } else {
-          // Wrap to next POM row or stay
+        if (_advanceTopToBottom) {
+          // Flow: Top to Bottom (Up to Down across POM rows for the same garment/sample)
           final currentPomIdx = _specSheet.poms.indexWhere((p) => p.pomCode == pomCode);
           if (currentPomIdx >= 0 && currentPomIdx < _specSheet.poms.length - 1) {
             _activePomCode = _specSheet.poms[currentPomIdx + 1].pomCode;
-            _activeSampleIndex = 1;
+          } else {
+            // Reached bottom of current sample -> wrap to first POM of next sample
+            if (sampleIndex < _specSheet.sampleCountPerSize) {
+              _activePomCode = _specSheet.poms.isNotEmpty ? _specSheet.poms.first.pomCode : null;
+              _activeSampleIndex = sampleIndex + 1;
+            } else {
+              // Wrap to next size if available
+              final currentSizeIdx = _specSheet.sizes.indexOf(size);
+              if (currentSizeIdx >= 0 && currentSizeIdx < _specSheet.sizes.length - 1) {
+                final nextSz = _specSheet.sizes[currentSizeIdx + 1];
+                _activeSize = nextSz;
+                _focusedSize = nextSz;
+                _activePomCode = _specSheet.poms.isNotEmpty ? _specSheet.poms.first.pomCode : null;
+                _activeSampleIndex = 1;
+                _jumpToSize(nextSz);
+              }
+            }
+          }
+        } else {
+          // Flow: Left to Right across samples of the same POM
+          if (sampleIndex < _specSheet.sampleCountPerSize) {
+            _activeSampleIndex = sampleIndex + 1;
+          } else {
+            final currentPomIdx = _specSheet.poms.indexWhere((p) => p.pomCode == pomCode);
+            if (currentPomIdx >= 0 && currentPomIdx < _specSheet.poms.length - 1) {
+              _activePomCode = _specSheet.poms[currentPomIdx + 1].pomCode;
+              _activeSampleIndex = 1;
+            }
           }
         }
       }
     });
 
     // Auto advance in modal mode
-    if (!_dockKeypad && sampleIndex < _specSheet.sampleCountPerSize) {
-      final nextIndex = sampleIndex + 1;
-      final pomRow = _specSheet.poms.firstWhere((p) => p.pomCode == pomCode);
-      final specVal = pomRow.sizeSpecs[size] ?? '-';
-      final currentReading = _specSheet.getReading(pomCode, size, nextIndex);
+    if (!_dockKeypad) {
+      String nextPom = pomCode;
+      int nextSample = sampleIndex;
+      String nextSize = size;
 
-      Future.delayed(const Duration(milliseconds: 180), () {
-        if (!mounted) return;
-        _openModalKeypad(
-          pomCode: pomCode,
-          description: pomRow.description,
-          size: size,
-          specValue: specVal,
-          sampleIndex: nextIndex,
-          currentDeviation: currentReading?.deviation,
-        );
-      });
+      if (_advanceTopToBottom) {
+        final currentPomIdx = _specSheet.poms.indexWhere((p) => p.pomCode == pomCode);
+        if (currentPomIdx >= 0 && currentPomIdx < _specSheet.poms.length - 1) {
+          nextPom = _specSheet.poms[currentPomIdx + 1].pomCode;
+        } else if (sampleIndex < _specSheet.sampleCountPerSize) {
+          nextPom = _specSheet.poms.isNotEmpty ? _specSheet.poms.first.pomCode : pomCode;
+          nextSample = sampleIndex + 1;
+        } else {
+          final currentSizeIdx = _specSheet.sizes.indexOf(size);
+          if (currentSizeIdx >= 0 && currentSizeIdx < _specSheet.sizes.length - 1) {
+            nextSize = _specSheet.sizes[currentSizeIdx + 1];
+            nextPom = _specSheet.poms.isNotEmpty ? _specSheet.poms.first.pomCode : pomCode;
+            nextSample = 1;
+          }
+        }
+      } else {
+        if (sampleIndex < _specSheet.sampleCountPerSize) {
+          nextSample = sampleIndex + 1;
+        }
+      }
+
+      if (nextPom != pomCode || nextSample != sampleIndex || nextSize != size) {
+        final pomRow = _specSheet.poms.firstWhere((p) => p.pomCode == nextPom);
+        final specVal = pomRow.sizeSpecs[nextSize] ?? '-';
+        final currentReading = _specSheet.getReading(nextPom, nextSize, nextSample);
+
+        Future.delayed(const Duration(milliseconds: 180), () {
+          if (!mounted) return;
+          _openModalKeypad(
+            pomCode: nextPom,
+            description: pomRow.description,
+            size: nextSize,
+            specValue: specVal,
+            sampleIndex: nextSample,
+            currentDeviation: currentReading?.deviation,
+          );
+        });
+      }
     }
   }
 
@@ -215,6 +267,8 @@ class _DigitalInspectionSheetScreenState
         tolerance: _specSheet.tolerance,
         pomTolerance: _specSheet.getPomTolerance(pomCode, size: size),
         currentDeviation: currentDeviation,
+        advanceTopToBottom: _advanceTopToBottom,
+        onToggleAdvanceDirection: () => setState(() => _advanceTopToBottom = !_advanceTopToBottom),
         onSelect: (dev, txt) =>
             _recordSample(pomCode, size, sampleIndex, dev, txt),
         onClear: () => _clearSample(pomCode, size, sampleIndex),
@@ -222,9 +276,9 @@ class _DigitalInspectionSheetScreenState
     );
   }
 
-  /// Interactive Inspection Summary with Embedded Real-time Histogram (Page 4)
+  /// Interactive Inspection Summary with Embedded Real-time Histogram (Page 2 request: POM-specific histogram)
   void _showStatsSummary() {
-    String selectedPomFilter = 'ALL';
+    String selectedPomFilter = _activePomCode ?? (_specSheet.poms.isNotEmpty ? _specSheet.poms.first.pomCode : 'ALL');
 
     showDialog(
       context: context,
@@ -243,6 +297,14 @@ class _DigitalInspectionSheetScreenState
           final passRatePercent = (total == 0) ? 100 : ((inTol / total) * 100).round();
 
           final deviationsList = filteredReadings.map((r) => r.deviation).toList();
+
+          final SpecPomRow? activePomRow = selectedPomFilter == 'ALL'
+              ? null
+              : _specSheet.poms.cast<SpecPomRow?>().firstWhere((p) => p?.pomCode == selectedPomFilter, orElse: () => null);
+
+          final PomTolerance activePomTol = activePomRow != null
+              ? _specSheet.getPomTolerance(activePomRow.pomCode)
+              : PomTolerance(posTol: _specSheet.tolerance, negTol: _specSheet.tolerance);
 
           return AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -275,7 +337,7 @@ class _DigitalInspectionSheetScreenState
                     ),
                     const SizedBox(height: 12),
 
-                    // Top KPI Badges
+                    // Top KPI Badges (Strictly reflecting the selected POM or Overall)
                     Row(
                       children: [
                         Expanded(child: _statBadge('Pass Rate', '$passRatePercent%', passRatePercent >= 90 ? AppColors.inTolGreen : AppColors.outTolRed)),
@@ -287,12 +349,73 @@ class _DigitalInspectionSheetScreenState
                     ),
                     const SizedBox(height: 14),
 
+                    // Specific POM Header Card
+                    if (activePomRow != null) ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: AppColors.primaryBlue.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppColors.primaryBlue.withValues(alpha: 0.2)),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppColors.primaryBlue,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                activePomRow.pomCode,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                activePomRow.description,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 13,
+                                  color: AppColors.deepNavy,
+                                ),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: AppColors.borderLight),
+                              ),
+                              child: Text(
+                                'Tol: ${activePomTol.displayString}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 11,
+                                  color: AppColors.primaryDark,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
+
                     // POM Filter selector
                     Row(
                       children: [
                         const Text(
-                          'Filter by POM: ',
-                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.slateNavy),
+                          'Select POM: ',
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.slateNavy),
                         ),
                         const SizedBox(width: 6),
                         Expanded(
@@ -337,14 +460,16 @@ class _DigitalInspectionSheetScreenState
                     ),
                     const SizedBox(height: 12),
 
-                    // Live Interactive Histogram (Page 4 request)
+                    // Live Interactive Histogram (POM Specific)
                     Text(
-                      'Measurement Deviation Histogram (${selectedPomFilter == 'ALL' ? 'Total Sample' : selectedPomFilter}):',
+                      activePomRow != null
+                          ? 'Histogram: ${activePomRow.pomCode} (${activePomRow.description})'
+                          : 'Measurement Deviation Histogram (Total Sample):',
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.deepNavy),
                     ),
                     const SizedBox(height: 8),
                     InteractiveHistogram(
-                      tolerance: _specSheet.tolerance,
+                      tolerance: activePomTol.posTol,
                       deviations: deviationsList,
                     ),
                   ],
@@ -475,93 +600,351 @@ class _DigitalInspectionSheetScreenState
     );
   }
 
-  /// Manual Add POM Row during inspection (Page 2 request)
+  /// Manual Add POM Row during inspection (Page 1 request: individual size specs & tolerances)
   void _addNewPomRow() {
     final codeCtrl = TextEditingController();
     final descCtrl = TextEditingController();
-    final specCtrl = TextEditingController();
+    final defaultSpecCtrl = TextEditingController();
+
+    // Per-size spec controllers
+    final Map<String, TextEditingController> sizeSpecCtrls = {
+      for (final sz in _specSheet.sizes) sz: TextEditingController(),
+    };
+
+    // Per-size tolerance overrides (null means inherits POM tolerance)
+    final Map<String, double?> sizeTolOverrides = {
+      for (final sz in _specSheet.sizes) sz: null,
+    };
+
+    double baseTol = _specSheet.tolerance;
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        title: const Row(
-          children: [
-            Icon(Icons.add_circle_outline_rounded, color: AppColors.primaryBlue),
-            SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'Add Extra Measurement Point',
-                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
-                overflow: TextOverflow.ellipsis,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDlgState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+          titlePadding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+          title: const Row(
+            children: [
+              Icon(Icons.add_circle_outline_rounded, color: AppColors.primaryBlue),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Add Measurement Point',
+                  style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
+            ],
+          ),
+          content: SizedBox(
+            width: 500,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.72,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // POM Code & Description
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 120,
+                          child: TextField(
+                            controller: codeCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'POM Code *',
+                              hintText: 'e.g. LOOP',
+                              isDense: true,
+                            ),
+                            textCapitalization: TextCapitalization.characters,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TextField(
+                            controller: descCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'Description *',
+                              hintText: 'e.g. NUMBER OF LOOPS',
+                              isDense: true,
+                            ),
+                            textCapitalization: TextCapitalization.words,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Base Tolerance Selector
+                    const Text(
+                      'Standard POM Tolerance:',
+                      style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12, color: AppColors.slateNavy),
+                    ),
+                    const SizedBox(height: 6),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      children: [0.125, 0.25, 0.375, 0.5, 0.75, 1.0].map((tol) {
+                        final isSel = (baseTol - tol).abs() < 0.001;
+                        return ChoiceChip(
+                          label: Text('±${formatDeviation(tol)}"'),
+                          selected: isSel,
+                          selectedColor: AppColors.selectedBlueLight,
+                          labelStyle: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w800,
+                            color: isSel ? AppColors.primaryBlue : AppColors.deepNavy,
+                          ),
+                          onSelected: (_) => setDlgState(() => baseTol = tol),
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Quick Nominal Spec Autofill
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: AppColors.cardFill,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppColors.borderLight),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Quick Nominal Spec (Fill All Sizes):',
+                            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 11, color: AppColors.slateNavy),
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: defaultSpecCtrl,
+                                  decoration: const InputDecoration(
+                                    hintText: 'e.g. 5 or 32',
+                                    isDense: true,
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              FilledButton.tonal(
+                                onPressed: () {
+                                  final val = defaultSpecCtrl.text.trim();
+                                  if (val.isNotEmpty) {
+                                    setDlgState(() {
+                                      for (final ctrl in sizeSpecCtrls.values) {
+                                        ctrl.text = val;
+                                      }
+                                    });
+                                  }
+                                },
+                                style: FilledButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                ),
+                                child: const Text('Apply to All Sizes', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800)),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Individual Size Specs & Tolerance Matrix (Page 1 request)
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Individual Size Specs & Tolerances:',
+                          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12, color: AppColors.deepNavy),
+                        ),
+                        Text(
+                          '${_specSheet.sizes.length} sizes',
+                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.slateNavy.withValues(alpha: 0.7)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+
+                    Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: AppColors.borderLight),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: _specSheet.sizes.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1, color: AppColors.borderLight),
+                        itemBuilder: (ctx, idx) {
+                          final sz = _specSheet.sizes[idx];
+                          final ctrl = sizeSpecCtrls[sz]!;
+                          final customTol = sizeTolOverrides[sz];
+                          final effectiveTol = customTol ?? baseTol;
+
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            child: Row(
+                              children: [
+                                // Size Badge
+                                Container(
+                                  width: 60,
+                                  padding: const EdgeInsets.symmetric(vertical: 4),
+                                  alignment: Alignment.center,
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primaryBlue.withValues(alpha: 0.1),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Text(
+                                    sz,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w900,
+                                      fontSize: 11,
+                                      color: AppColors.primaryBlue,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+
+                                // Nominal Spec input
+                                Expanded(
+                                  flex: 3,
+                                  child: TextField(
+                                    controller: ctrl,
+                                    decoration: const InputDecoration(
+                                      labelText: 'Nominal Spec',
+                                      hintText: 'e.g. 32',
+                                      isDense: true,
+                                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+
+                                // Per-size tolerance button/dropdown
+                                PopupMenuButton<double?>(
+                                  tooltip: 'Tolerance for size $sz',
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  onSelected: (val) => setDlgState(() => sizeTolOverrides[sz] = val),
+                                  itemBuilder: (ctx) => [
+                                    PopupMenuItem<double?>(
+                                      value: null,
+                                      child: Text(
+                                        'Default (±${formatDeviation(baseTol)}")',
+                                        style: TextStyle(
+                                          fontWeight: customTol == null ? FontWeight.w800 : FontWeight.normal,
+                                          fontSize: 12,
+                                          color: AppColors.primaryBlue,
+                                        ),
+                                      ),
+                                    ),
+                                    const PopupMenuDivider(height: 1),
+                                    ...[0.125, 0.25, 0.375, 0.5, 0.75, 1.0].map((t) => PopupMenuItem<double?>(
+                                      value: t,
+                                      child: Text(
+                                        '±${formatDeviation(t)}"',
+                                        style: TextStyle(
+                                          fontWeight: customTol == t ? FontWeight.w800 : FontWeight.normal,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    )),
+                                  ],
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: customTol != null ? AppColors.inTolLight : AppColors.cardFill,
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(
+                                        color: customTol != null ? AppColors.inTolGreen : AppColors.borderLight,
+                                      ),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          '±${formatDeviation(effectiveTol)}"',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w800,
+                                            color: customTol != null ? AppColors.inTolGreen : AppColors.slateNavy,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 3),
+                                        const Icon(Icons.arrow_drop_down_rounded, size: 16, color: AppColors.slateNavy),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final code = codeCtrl.text.trim().toUpperCase();
+                final desc = descCtrl.text.trim();
+                if (code.isEmpty || desc.isEmpty) return;
+
+                final defaultSpec = defaultSpecCtrl.text.trim().isNotEmpty ? defaultSpecCtrl.text.trim() : '-';
+                final Map<String, String> sizeSpecs = {};
+                for (final sz in _specSheet.sizes) {
+                  final spec = sizeSpecCtrls[sz]?.text.trim();
+                  sizeSpecs[sz] = (spec != null && spec.isNotEmpty) ? spec : defaultSpec;
+                }
+
+                final newPom = SpecPomRow(
+                  no: _specSheet.poms.length + 1,
+                  pomCode: code,
+                  description: desc,
+                  sizeSpecs: sizeSpecs,
+                );
+
+                // Save base POM tolerance and any per-size custom tolerances
+                final updatedCustomTol = Map<String, PomTolerance>.from(_specSheet.customPomTolerances);
+                updatedCustomTol[code] = PomTolerance(posTol: baseTol, negTol: baseTol);
+
+                for (final entry in sizeTolOverrides.entries) {
+                  if (entry.value != null) {
+                    updatedCustomTol['${code}_${entry.key}'] = PomTolerance(posTol: entry.value!, negTol: entry.value!);
+                  }
+                }
+
+                final updatedPoms = List<SpecPomRow>.from(_specSheet.poms)..add(newPom);
+                setState(() {
+                  _specSheet = _specSheet.copyWith(
+                    poms: updatedPoms,
+                    customPomTolerances: updatedCustomTol,
+                  );
+                  _activePomCode = code;
+                });
+                Navigator.pop(ctx);
+              },
+              child: const Text('Add Point', style: TextStyle(fontWeight: FontWeight.w800)),
             ),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: codeCtrl,
-              decoration: const InputDecoration(
-                labelText: 'POM Code',
-                hintText: 'e.g. LOOP or B12',
-              ),
-              textCapitalization: TextCapitalization.characters,
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: descCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Description',
-                hintText: 'e.g. NUMBER OF LOOPS',
-              ),
-              textCapitalization: TextCapitalization.words,
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: specCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Default Nominal Spec (optional)',
-                hintText: 'e.g. 5',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final code = codeCtrl.text.trim().toUpperCase();
-              final desc = descCtrl.text.trim();
-              if (code.isEmpty || desc.isEmpty) return;
-
-              final defaultSpec = specCtrl.text.trim().isNotEmpty ? specCtrl.text.trim() : '-';
-              final Map<String, String> sizeSpecs = {};
-              for (final sz in _specSheet.sizes) {
-                sizeSpecs[sz] = defaultSpec;
-              }
-
-              final newPom = SpecPomRow(
-                no: _specSheet.poms.length + 1,
-                pomCode: code,
-                description: desc,
-                sizeSpecs: sizeSpecs,
-              );
-
-              final updatedPoms = List<SpecPomRow>.from(_specSheet.poms)..add(newPom);
-              setState(() {
-                _specSheet = _specSheet.copyWith(poms: updatedPoms);
-                _activePomCode = code;
-              });
-              Navigator.pop(ctx);
-            },
-            child: const Text('Add Point', style: TextStyle(fontWeight: FontWeight.w800)),
-          ),
-        ],
       ),
     );
   }
@@ -1025,6 +1408,50 @@ class _DigitalInspectionSheetScreenState
                       ),
                     ),
                     const SizedBox(width: 8),
+                    InkWell(
+                      onTap: () {
+                        setState(() => _advanceTopToBottom = !_advanceTopToBottom);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              _advanceTopToBottom
+                                  ? 'Flow: ⬇️ Top-to-Bottom across POMs (Garment mode)'
+                                  : 'Flow: ➡️ Left-to-Right across samples (POM mode)',
+                            ),
+                            duration: const Duration(seconds: 1),
+                          ),
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(6),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppColors.primaryBlue.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: AppColors.primaryBlue.withValues(alpha: 0.2)),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _advanceTopToBottom ? Icons.arrow_downward_rounded : Icons.arrow_forward_rounded,
+                              size: 13,
+                              color: AppColors.primaryBlue,
+                            ),
+                            const SizedBox(width: 3),
+                            Text(
+                              _advanceTopToBottom ? 'Flow: ⬇️ Down' : 'Flow: ➡️ Right',
+                              style: const TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.primaryBlue,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
                     Text(
                       '$totalReadings recorded',
                       style: const TextStyle(
@@ -1109,6 +1536,8 @@ class _DigitalInspectionSheetScreenState
               tolerance: _specSheet.tolerance,
               pomTolerance: _specSheet.getPomTolerance(_activePomCode!, size: _activeSize),
               currentDeviation: _specSheet.getReading(_activePomCode!, _activeSize!, _activeSampleIndex!)?.deviation,
+              advanceTopToBottom: _advanceTopToBottom,
+              onToggleAdvanceDirection: () => setState(() => _advanceTopToBottom = !_advanceTopToBottom),
               onSelect: (dev, txt) => _recordSample(_activePomCode!, _activeSize!, _activeSampleIndex!, dev, txt),
               onClear: () => _clearSample(_activePomCode!, _activeSize!, _activeSampleIndex!),
             )

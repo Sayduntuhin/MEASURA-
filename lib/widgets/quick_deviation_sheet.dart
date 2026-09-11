@@ -15,6 +15,8 @@ class QuickDeviationSheet extends StatelessWidget {
   final VoidCallback onClear;
   final bool isDocked;
   final VoidCallback? onClose;
+  final bool advanceTopToBottom;
+  final VoidCallback? onToggleAdvanceDirection;
 
   const QuickDeviationSheet({
     super.key,
@@ -30,6 +32,8 @@ class QuickDeviationSheet extends StatelessWidget {
     required this.onClear,
     this.isDocked = false,
     this.onClose,
+    this.advanceTopToBottom = true,
+    this.onToggleAdvanceDirection,
   });
 
   /// Sequential Options: 0 in center, Positives: 1/8 to 1, Negatives: -1/8 to -1 (including 7/8)
@@ -194,6 +198,42 @@ class QuickDeviationSheet extends StatelessWidget {
                     ),
                   ),
                 ),
+                if (onToggleAdvanceDirection != null) ...[
+                  const SizedBox(width: 6),
+                  InkWell(
+                    onTap: onToggleAdvanceDirection,
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: AppColors.primaryBlue.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: AppColors.primaryBlue.withValues(alpha: 0.25)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            advanceTopToBottom
+                                ? Icons.arrow_downward_rounded
+                                : Icons.arrow_forward_rounded,
+                            size: 13,
+                            color: AppColors.primaryBlue,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            advanceTopToBottom ? 'Down' : 'Right',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.primaryBlue,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
                 if (isDocked && onClose != null) ...[
                   const SizedBox(width: 6),
                   InkWell(
