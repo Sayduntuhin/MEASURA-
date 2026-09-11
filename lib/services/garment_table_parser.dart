@@ -19,6 +19,15 @@ class GarmentTableParser {
 
   /// Parses raw extracted PDF text into a structured GarmentSpecSheet
   static GarmentSpecSheet parse(String rawText, {String fallbackStyle = 'Uploaded Spec'}) {
+    // 1. Check for stream-formatted tech pack tables (Wrangler / Kontoor / Gerber PLM)
+    if (rawText.contains(RegExp(r'Description\|Variation', caseSensitive: false)) ||
+        (rawText.contains('WAST 1') && (rawText.contains('INSM') || rawText.contains('OTST')))) {
+      final streamSheet = _parseStreamTechPack(rawText, fallbackStyle: fallbackStyle);
+      if (streamSheet != null && streamSheet.sizes.length >= 2 && streamSheet.poms.length >= 2) {
+        return streamSheet;
+      }
+    }
+
     final lines = rawText
         .split('\n')
         .map((l) => l.trim())
@@ -298,5 +307,259 @@ class GarmentTableParser {
       description: description,
       sizeSpecs: sizeSpecs,
     );
+  }
+
+  /// Specialized parser for Wrangler / Kontoor / Gerber PLM stream-extracted PDF tables
+  static GarmentSpecSheet? _parseStreamTechPack(String raw, {String fallbackStyle = 'Uploaded Spec'}) {
+    try {
+      final headerRegex = RegExp(r'Description\|Variation', caseSensitive: false);
+      final headerMatches = headerRegex.allMatches(raw).toList();
+      if (headerMatches.isEmpty && !raw.contains('WAST 1')) return null;
+
+      final allSizes = <String>[];
+      final pomsMap = <String, SpecPomRow>{};
+      List<String> knownPomCodes = [];
+
+      // If no Description|Variation marker, treat the whole text as 1 section
+      final sections = <String>[];
+      if (headerMatches.isNotEmpty) {
+        for (int t = 0; t < headerMatches.length; t++) {
+          final start = headerMatches[t].end;
+          final end = (t + 1 < headerMatches.length) ? headerMatches[t + 1].start : raw.length;
+          sections.add(raw.substring(start, end));
+        }
+      } else {
+        sections.add(raw);
+      }
+
+      final sizeRegex = RegExp(r'\[?(\d{1,2}/\d{1,2}|XXS|XS|S|M|L|XL|XXL|[1-5]XL|\b\d{2}\b)\]?', caseSensitive: false);
+
+      for (final section in sections) {
+        // 1. Extract sizes immediately at the start of section
+        final sizes = <String>[];
+        int scanCursor = 0;
+        while (scanCursor < section.length) {
+          final m = sizeRegex.matchAsPrefix(section, scanCursor);
+          if (m != null && m.group(1) != null) {
+            final s = m.group(1)!.trim();
+            sizes.add(s);
+            scanCursor = m.end;
+          } else {
+            break;
+          }
+        }
+
+        if (sizes.isEmpty) continue;
+
+        for (final s in sizes) {
+          if (!allSizes.contains(s)) {
+            allSizes.add(s);
+          }
+        }
+
+        final pomStream = section.substring(scanCursor);
+
+        // 2. Find POM markers with sequential row numbers 1, 2, 3...
+        int nextRowNo = 1;
+        int searchCursor = 0;
+
+        while (searchCursor < pomStream.length) {
+          RegExp directRegex;
+          if (knownPomCodes.length >= nextRowNo) {
+            final code = knownPomCodes[nextRowNo - 1];
+            directRegex = RegExp('($code)\\s+($nextRowNo)');
+          } else {
+            directRegex = RegExp('([A-Z]{3,6})\\s+($nextRowNo)');
+          }
+
+          final m = directRegex.allMatches(pomStream.substring(searchCursor)).firstOrNull;
+          if (m == null) break;
+
+          final actualStart = searchCursor + m.start;
+          final actualEnd = searchCursor + m.end;
+          final pomCode = m.group(1)!;
+
+          final rowContent = pomStream.substring(searchCursor, actualStart).trim();
+          searchCursor = actualEnd;
+          final rowNo = nextRowNo;
+          nextRowNo++;
+
+          final descRegex = RegExp(r'([A-Za-z][A-Za-z0-9\s\-–"@]+[A-Za-z])');
+          final descMatch = descRegex.firstMatch(rowContent);
+          if (descMatch == null) continue;
+
+          final description = descMatch.group(1)!.trim();
+          final prefix = rowContent.substring(0, descMatch.start).trim();
+          final suffix = rowContent.substring(descMatch.end).trim();
+
+          int suffixCount = 0;
+          if (suffix.isNotEmpty) {
+            if (suffix.length % 2 == 0 && suffix.length ~/ 2 <= sizes.length) {
+              suffixCount = suffix.length ~/ 2;
+            } else {
+              final fracCount = RegExp(r'/(16|32|[248])').allMatches(suffix).length;
+              suffixCount = fracCount > 0 ? fracCount : 3;
+            }
+            if (suffixCount >= sizes.length) suffixCount = sizes.length ~/ 2;
+          }
+
+          final prefixCount = sizes.length - suffixCount;
+          final prefixVals = _parseFusedMeasurements(prefix, prefixCount);
+          final suffixVals = suffix.isNotEmpty ? _parseFusedMeasurements(suffix, suffixCount) : <String>[];
+          final allVals = [...prefixVals, ...suffixVals];
+
+          final specs = <String, String>{};
+          for (int si = 0; si < sizes.length && si < allVals.length; si++) {
+            specs[sizes[si]] = allVals[si];
+          }
+
+          if (pomsMap.containsKey(pomCode)) {
+            final existing = pomsMap[pomCode]!;
+            final mergedSpecs = Map<String, String>.from(existing.sizeSpecs)..addAll(specs);
+            pomsMap[pomCode] = existing.copyWith(sizeSpecs: mergedSpecs);
+          } else {
+            pomsMap[pomCode] = SpecPomRow(
+              no: rowNo,
+              pomCode: pomCode,
+              description: description,
+              sizeSpecs: specs,
+            );
+          }
+        }
+
+        if (knownPomCodes.isEmpty && pomsMap.isNotEmpty) {
+          final sorted = pomsMap.values.toList()..sort((a, b) => a.no.compareTo(b.no));
+          knownPomCodes = sorted.map((p) => p.pomCode).toList();
+        }
+      }
+
+      if (allSizes.isEmpty || pomsMap.isEmpty) return null;
+
+      // Extract style name / PO
+      String style = fallbackStyle;
+      final perMatch = RegExp(r'PER\s+(\d{4,8})', caseSensitive: false).firstMatch(raw);
+      if (perMatch != null && perMatch.group(1) != null) {
+        style = 'Style ${perMatch.group(1)}';
+      }
+
+      final pomsList = pomsMap.values.toList()..sort((a, b) => a.no.compareTo(b.no));
+
+      return GarmentSpecSheet(
+        id: _uuid.v4(),
+        style: style,
+        po: '',
+        brand: 'Wrangler',
+        stage: 'Before Wash',
+        date: DateTime.now(),
+        tolerance: 0.25,
+        sampleCountPerSize: 5,
+        sizes: allSizes,
+        poms: pomsList,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static List<String> _parseFusedMeasurements(String raw, int expectedCount) {
+    final clean = raw.trim();
+    if (clean.isEmpty || expectedCount <= 0) return [];
+
+    final fracRegex = RegExp(r'\s+([1-9]|1[0-5])/(16|32|[248])');
+    final matches = fracRegex.allMatches(clean).toList();
+
+    if (matches.isEmpty) {
+      if (clean.length % expectedCount == 0) {
+        final chunkLen = clean.length ~/ expectedCount;
+        final results = <String>[];
+        for (int i = 0; i < clean.length; i += chunkLen) {
+          results.add(clean.substring(i, i + chunkLen));
+        }
+        return results;
+      }
+      return clean.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+    }
+
+    final results = <String>[];
+    int cursor = 0;
+
+    for (int i = 0; i < matches.length; i++) {
+      final m = matches[i];
+      final fracText = m.group(0)!.trim();
+
+      int runStart = m.start - 1;
+      while (runStart >= cursor && clean[runStart] != ' ' && int.tryParse(clean[runStart]) != null) {
+        runStart--;
+      }
+      runStart++;
+      final runDigits = clean.substring(runStart, m.start);
+
+      int wholeNumDigits = 2;
+      if (runDigits.length == 1) {
+        wholeNumDigits = 1;
+      } else if (runDigits.length >= 2) {
+        final twoDigits = int.tryParse(runDigits.substring(runDigits.length - 2)) ?? 0;
+        if (twoDigits < 10 || twoDigits > 65) {
+          wholeNumDigits = 1;
+        } else {
+          wholeNumDigits = 2;
+        }
+      } else {
+        wholeNumDigits = 0;
+      }
+
+      final intStart = m.start - wholeNumDigits;
+
+      if (intStart > cursor) {
+        final prefix = clean.substring(cursor, intStart).trim();
+        if (prefix.isNotEmpty) {
+          results.addAll(_splitIntegerChunk(prefix));
+        }
+      }
+
+      final wholeNum = clean.substring(intStart, m.start).trim();
+      if (wholeNum.isNotEmpty) {
+        results.add('$wholeNum $fracText');
+      } else {
+        results.add(fracText);
+      }
+
+      cursor = m.end;
+    }
+
+    if (cursor < clean.length) {
+      final tail = clean.substring(cursor).trim();
+      if (tail.isNotEmpty) {
+        results.addAll(_splitIntegerChunk(tail));
+      }
+    }
+
+    return results;
+  }
+
+  static List<String> _splitIntegerChunk(String text) {
+    final clean = text.trim();
+    if (clean.isEmpty) return [];
+
+    final parts = clean.split(RegExp(r'\s+')).where((s) => s.isNotEmpty).toList();
+    if (parts.length > 1) return parts;
+
+    if (clean.length >= 4 && clean.length % 2 == 0) {
+      final list = <String>[];
+      for (int i = 0; i < clean.length; i += 2) {
+        list.add(clean.substring(i, i + 2));
+      }
+      return list;
+    }
+
+    if (clean.length == 2) {
+      final val = int.tryParse(clean) ?? 0;
+      if (val > 65 || val < 10) {
+        return [clean.substring(0, 1), clean.substring(1, 2)];
+      }
+      return [clean];
+    }
+
+    return [clean];
   }
 }
