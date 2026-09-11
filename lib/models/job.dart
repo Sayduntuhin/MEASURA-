@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// every measurement point in the job.
 class Job {
   final String id;
+  final String userId; // Firebase Auth UID
   final String style;
   final String po;
   final String patternNo;
@@ -21,6 +22,7 @@ class Job {
 
   Job({
     required this.id,
+    this.userId = '',
     required this.style,
     required this.po,
     required this.patternNo,
@@ -34,6 +36,7 @@ class Job {
 
   Map<String, dynamic> toMap() {
     return {
+      'userId': userId,
       'style': style,
       'po': po,
       'patternNo': patternNo,
@@ -49,6 +52,7 @@ class Job {
   factory Job.fromMap(String id, Map<String, dynamic> map) {
     return Job(
       id: id,
+      userId: map['userId'] ?? '',
       style: map['style'] ?? '',
       po: map['po'] ?? '',
       patternNo: map['patternNo'] ?? '',

@@ -1,11 +1,10 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'firebase_options.dart';
-import 'screens/job_history_screen.dart';
-import 'screens/login_screen.dart';
+import 'screens/auth_gate.dart';
+import 'screens/splash_screen.dart';
 import 'services/auth_service.dart';
 import 'services/firestore_service.dart';
 import 'theme/app_theme.dart';
@@ -32,32 +31,8 @@ class MeasuraApp extends StatelessWidget {
         title: 'MEASURA',
         debugShowCheckedModeBanner: false,
         theme: buildAppTheme(),
-        home: const _AuthGate(),
+        home: const SplashScreen(nextScreen: AuthGate()),
       ),
-    );
-  }
-}
-
-/// Shows the login screen or the job list depending on auth state.
-class _AuthGate extends StatelessWidget {
-  const _AuthGate();
-
-  @override
-  Widget build(BuildContext context) {
-    final auth = context.read<AuthService>();
-    return StreamBuilder<User?>(
-      stream: auth.authStateChanges,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
-          );
-        }
-        if (snapshot.data == null) {
-          return const LoginScreen();
-        }
-        return const JobHistoryScreen();
-      },
     );
   }
 }

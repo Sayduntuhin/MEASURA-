@@ -22,6 +22,10 @@ class AppColors {
   // Status
   static const passGreen = Color(0xFF10B981);
   static const failRed = Color(0xFFEF4444);
+  static const inTolGreen = Color(0xFF16A34A);
+  static const inTolLight = Color(0xFFDCFCE7);
+  static const outTolRed = Color(0xFFDC2626);
+  static const outTolLight = Color(0xFFFEE2E2);
 
   // Backwards compatibility aliases
   static const cream = background;
@@ -84,31 +88,43 @@ ThemeData buildAppTheme() {
         foregroundColor: AppColors.deepNavy,
         side: const BorderSide(color: AppColors.borderLight, width: 1.2),
         backgroundColor: AppColors.surfaceWhite,
+        elevation: 0,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(14),
         ),
-        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-        textStyle: const TextStyle(fontWeight: FontWeight.w600),
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 18),
+        textStyle: const TextStyle(
+          fontWeight: FontWeight.w700,
+          fontSize: 13,
+          letterSpacing: 0.2,
+        ),
       ),
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
         backgroundColor: AppColors.primaryBlue,
         foregroundColor: Colors.white,
-        elevation: 0,
-        shadowColor: AppColors.primaryBlue.withValues(alpha: 0.3),
+        elevation: 2,
+        shadowColor: AppColors.primaryBlue.withValues(alpha: 0.35),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(14),
         ),
-        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
-        textStyle: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+        padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 24),
+        textStyle: const TextStyle(
+          fontWeight: FontWeight.w800,
+          fontSize: 15,
+          letterSpacing: 0.3,
+        ),
       ),
     ),
     floatingActionButtonTheme: FloatingActionButtonThemeData(
       backgroundColor: AppColors.primaryBlue,
       foregroundColor: Colors.white,
-      elevation: 3,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      elevation: 4,
+      focusElevation: 6,
+      hoverElevation: 6,
+      highlightElevation: 8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,

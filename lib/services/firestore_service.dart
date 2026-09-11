@@ -1,17 +1,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:uuid/uuid.dart';
 import '../models/job.dart';
 import '../models/reading.dart';
 import '../models/measurement_point.dart';
+import '../models/spec_sheet_model.dart';
 
 /// Firestore layout:
-///   jobs/{jobId}                       -> Job fields
+///   jobs/{jobId}                       -> Job fields (with userId and createdBy)
 ///   jobs/{jobId}/readings/{readingId}  -> Reading fields
-///
-/// Multi-user: every authenticated user reads/writes the same
-/// `jobs` collection, so jobs and their readings sync across
-/// devices. Lock this down with Firestore security rules once
-/// you know who should see/edit what (e.g. by team or role).
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final _uuid = const Uuid();
@@ -20,6 +17,7 @@ class FirestoreService {
       _db.collection('jobs');
 
   Future<Job> createJob({
+    String userId = '',
     required String style,
     required String po,
     required String patternNo,
@@ -30,8 +28,12 @@ class FirestoreService {
     required String createdBy,
   }) async {
     final id = _uuid.v4();
+    final effectiveUid = userId.isNotEmpty
+        ? userId
+        : (FirebaseAuth.instance.currentUser?.uid ?? '');
     final job = Job(
       id: id,
+      userId: effectiveUid,
       style: style,
       po: po,
       patternNo: patternNo,
@@ -46,13 +48,87 @@ class FirestoreService {
     return job;
   }
 
-  /// Live list of jobs, most recent first.
-  Stream<List<Job>> watchJobs() {
+  Future<void> updateJob({
+    required String jobId,
+    required String style,
+    required String po,
+    required String patternNo,
+    required String sampleUnit,
+    required String sizeSet,
+    required DateTime date,
+    required double tolerance,
+  }) async {
+    await _jobs.doc(jobId).update({
+      'style': style,
+      'po': po,
+      'patternNo': patternNo,
+      'sampleUnit': sampleUnit,
+      'sizeSet': sizeSet,
+      'date': Timestamp.fromDate(date),
+      'tolerance': tolerance,
+    });
+  }
+
+  Future<void> deleteJob(String jobId) async {
+    try {
+      final readings = await _jobs
+          .doc(jobId)
+          .collection('readings')
+          .get()
+          .timeout(const Duration(seconds: 4));
+      for (final doc in readings.docs) {
+        await doc.reference.delete().timeout(const Duration(seconds: 2));
+      }
+    } catch (_) {}
+    await _jobs.doc(jobId).delete().timeout(const Duration(seconds: 4));
+  }
+
+  /// Live list of jobs, scoped to the current user.
+  Stream<List<Job>> watchJobs({String? userId, String? userEmail}) {
     return _jobs.orderBy('createdAt', descending: true).snapshots().map(
-          (snap) => snap.docs
-              .map((d) => Job.fromMap(d.id, d.data()))
-              .toList(),
-        );
+      (snap) {
+        final currentUid = userId ?? FirebaseAuth.instance.currentUser?.uid;
+        final currentEmail =
+            userEmail ?? FirebaseAuth.instance.currentUser?.email;
+
+        return snap.docs
+            .map((d) => Job.fromMap(d.id, d.data()))
+            .where((job) {
+              // If not authenticated (e.g. mock mode), show all
+              if ((currentUid == null || currentUid.isEmpty) &&
+                  (currentEmail == null || currentEmail.isEmpty)) {
+                return true;
+              }
+
+              // 1. Matches user UID
+              if (currentUid != null && currentUid.isNotEmpty) {
+                if (job.userId.isNotEmpty && job.userId == currentUid) {
+                  return true;
+                }
+                if (job.createdBy == currentUid) {
+                  return true;
+                }
+              }
+
+              // 2. Matches user email (case-insensitive for legacy jobs)
+              if (currentEmail != null && currentEmail.isNotEmpty) {
+                if (job.createdBy.isNotEmpty &&
+                    job.createdBy.trim().toLowerCase() ==
+                        currentEmail.trim().toLowerCase()) {
+                  return true;
+                }
+                if (job.userId.isNotEmpty &&
+                    job.userId.trim().toLowerCase() ==
+                        currentEmail.trim().toLowerCase()) {
+                  return true;
+                }
+              }
+
+              return false;
+            })
+            .toList();
+      },
+    );
   }
 
   Future<void> addReading({
@@ -91,5 +167,28 @@ class FirestoreService {
               .map((d) => Reading.fromMap(d.id, d.data()))
               .toList(),
         );
+  }
+
+  /// Saves a complete GarmentSpecSheet to Firestore
+  static Future<void> saveSpecSheet(GarmentSpecSheet sheet) async {
+    await FirebaseFirestore.instance.collection('spec_sheets').doc(sheet.id).set(sheet.toMap());
+  }
+
+  /// Retrieves all spec sheets belonging to a user
+  static Future<List<GarmentSpecSheet>> getUserSpecSheets({String userId = ''}) async {
+    Query<Map<String, dynamic>> query = FirebaseFirestore.instance.collection('spec_sheets');
+    if (userId.isNotEmpty) {
+      query = query.where('userId', isEqualTo: userId);
+    }
+    final snapshot = await query.get();
+    return snapshot.docs.map((doc) => GarmentSpecSheet.fromMap(doc.id, doc.data())).toList();
+  }
+
+  /// Real-time stream of a specific spec sheet
+  static Stream<GarmentSpecSheet?> watchSpecSheet(String id) {
+    return FirebaseFirestore.instance.collection('spec_sheets').doc(id).snapshots().map((doc) {
+      if (!doc.exists || doc.data() == null) return null;
+      return GarmentSpecSheet.fromMap(doc.id, doc.data()!);
+    });
   }
 }

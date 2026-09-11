@@ -63,7 +63,7 @@ String formatDeviation(double value) {
   if (value == 0) return '0';
   final sign = value < 0 ? '-' : '';
   final abs = value.abs();
-  if (abs == 1.0) return '$sign 1';
+  if (abs == 1.0) return '${sign}1';
   final eighths = (abs * 8).round();
   final whole = eighths ~/ 8;
   final remainder = eighths % 8;

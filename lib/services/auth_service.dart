@@ -32,9 +32,11 @@ class AuthService {
   }
 
   Future<void> signOut() async {
-    await Future.wait([
-      _auth.signOut(),
-      _googleSignIn.signOut(),
-    ]);
+    try {
+      await _googleSignIn.signOut();
+    } catch (_) {}
+    try {
+      await _auth.signOut();
+    } catch (_) {}
   }
 }
