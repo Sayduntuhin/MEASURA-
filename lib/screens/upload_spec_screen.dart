@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import '../models/tolerance_standard.dart';
 import '../services/garment_table_parser.dart';
+import '../services/pdf_diagnostic_logger.dart';
 import '../services/pdf_scanner_service.dart';
 import '../theme/app_theme.dart';
 import 'spec_review_screen.dart';
@@ -26,6 +27,38 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
   double _progress = 0.0;
   String _statusMessage = '';
 
+  void _showDiagnosticsDialog() {
+    final report = PdfDiagnosticLogger.getReport();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.bug_report_outlined, color: AppColors.primaryBlue),
+            SizedBox(width: 8),
+            Text('PDF Scan Diagnostics', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              report.isEmpty ? 'No diagnostic logs recorded yet. Try selecting or scanning a document.' : report,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _pickFile() async {
     final file = await _scannerService.pickDocument();
     if (file != null) {
@@ -34,15 +67,18 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
       String? detectedNotice;
       final ext = (file.extension ?? '').toLowerCase();
       if (ext == 'pdf') {
+        PdfDiagnosticLogger.log('FILE_PICKED', 'Selected "${file.name}" (${file.size} bytes)');
         try {
           final bytes = await PdfScannerService.getFileBytes(file);
           if (bytes != null && bytes.isNotEmpty) {
             final doc = PdfDocument(inputBytes: bytes);
             pages = doc.pages.count;
+            PdfDiagnosticLogger.log('FILE_PICKED', 'PDF loaded: $pages page(s). Checking for table...');
             final extractor = PdfTextExtractor(doc);
             for (int p = 0; p < pages; p++) {
               try {
                 final txt = extractor.extractText(startPageIndex: p, endPageIndex: p);
+                PdfDiagnosticLogger.log('PAGE_CHECK', 'Page ${p + 1}: ${txt.length} characters extracted');
                 if (txt.length > 30) {
                   final parsed = GarmentTableParser.parse(txt);
                   if (parsed.sizes.length >= 2 &&
@@ -50,14 +86,19 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
                       parsed.poms.any((pom) => pom.sizeSpecs.isNotEmpty)) {
                     detectedPage = p + 1;
                     detectedNotice = 'Measurement table detected on Page ${p + 1} (${parsed.poms.length} POMs, ${parsed.sizes.length} sizes)';
+                    PdfDiagnosticLogger.log('TABLE_FOUND', detectedNotice);
                     break;
                   }
                 }
-              } catch (_) {}
+              } catch (e) {
+                PdfDiagnosticLogger.log('PAGE_CHECK_ERR', 'Error scanning page ${p + 1}: $e');
+              }
             }
             doc.dispose();
           }
-        } catch (_) {}
+        } catch (e) {
+          PdfDiagnosticLogger.log('PICK_ERR', 'Error reading PDF data: $e');
+        }
       }
 
       setState(() {
@@ -211,6 +252,7 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
           cleanMessage = 'Processing timed out. The tech pack took longer than expected over this network. Please retry or import an Excel (.xlsx / .csv) file for instant offline parsing.';
         }
 
+        debugPrint('[MEASURA_SCAN_ERROR] $cleanMessage');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Row(
@@ -229,8 +271,13 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
                 ),
               ],
             ),
+            action: SnackBarAction(
+              label: 'DEBUG',
+              textColor: Colors.amber,
+              onPressed: _showDiagnosticsDialog,
+            ),
             backgroundColor: AppColors.outTolRed,
-            duration: const Duration(seconds: 5),
+            duration: const Duration(seconds: 8),
             behavior: SnackBarBehavior.floating,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           ),
@@ -481,6 +528,20 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
                 ),
               ),
             ),
+            if (_selectedFile != null && PdfDiagnosticLogger.hasLogs) ...[
+              const SizedBox(height: 6),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: _showDiagnosticsDialog,
+                  icon: const Icon(Icons.bug_report_outlined, size: 16, color: AppColors.primaryBlue),
+                  label: const Text(
+                    'View Scan Diagnostics',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primaryBlue),
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
 
             // Multi-Page Selector (Only if PDF has multiple pages)

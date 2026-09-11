@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 import '../models/spec_sheet_model.dart';
 import 'excel_spec_parser.dart';
 import 'garment_table_parser.dart';
+import 'pdf_diagnostic_logger.dart';
 
 class ScannedPdfNeedsVisionException implements Exception {
   final String message;
@@ -104,31 +105,59 @@ class PdfScannerService {
 
     // 0. Direct 100% Accurate & Free Offline Excel / CSV Parser (No AI, zero latency, 100% accuracy)
     if (ext == 'xlsx' || ext == 'xls' || ext == 'csv' || ext == 'tsv' || ext == 'txt') {
+      PdfDiagnosticLogger.clear();
+      PdfDiagnosticLogger.log('SCANNER', 'Parsing spreadsheet document offline with ExcelSpecParser...');
       onProgress?.call(0.40, 'Parsing spreadsheet measurements (100% accurate, offline)...');
       final parsed = ExcelSpecParser.parse(
         bytes: bytes,
         fileName: file.name,
         fallbackStyle: fallbackName,
       );
+      PdfDiagnosticLogger.log('SCANNER', 'ExcelSpecParser SUCCESS: ${parsed.sizes.length} sizes, ${parsed.poms.length} POM rows');
       onProgress?.call(1.0, 'Spreadsheet import complete! (100%)');
       return parsed;
     }
 
-    Uint8List bytesToScan = bytes;
-
     // 1. If PDF, check text and isolate the selected page
     if (ext == 'pdf') {
+      PdfDiagnosticLogger.clear();
+      PdfDiagnosticLogger.log('SCANNER', '==================== [PDF SCAN DEBUGGER] ====================');
+      PdfDiagnosticLogger.log('SCANNER', 'File: "${file.name}" | Size: ${(bytes.length / 1024).toStringAsFixed(1)} KB | Extension: $ext');
+
       try {
-        onProgress?.call(0.20, 'Analyzing PDF page ${targetPageIndex + 1} (20%)...');
         final PdfDocument document = PdfDocument(inputBytes: bytes);
         final int totalPages = document.pages.count;
         final int safePageIndex = targetPageIndex.clamp(0, totalPages - 1);
 
+        // Analyze internal PDF structure
+        final int checkLen = bytes.length > 30000 ? 30000 : bytes.length;
+        final headStr = String.fromCharCodes(bytes.sublist(0, checkLen));
+        final tailStr = bytes.length > checkLen
+            ? String.fromCharCodes(bytes.sublist(bytes.length - checkLen))
+            : '';
+        final hasFontObjects = headStr.contains('/Font') || tailStr.contains('/Font');
+        final hasImageObjects = headStr.contains('/Image') || tailStr.contains('/Image');
+
+        PdfDiagnosticLogger.log('PDF_INFO', 'Total Pages: $totalPages | Selected Page: ${safePageIndex + 1}');
+        PdfDiagnosticLogger.log('PDF_INFO', 'Internal /Font tags: $hasFontObjects | /Image tags: $hasImageObjects');
+
+        if (!hasFontObjects) {
+          PdfDiagnosticLogger.log('PDF_WARN', '⚠️ WARNING: No "/Font" dictionaries detected. This PDF likely has CAD vector outlines or scanned images rather than selectable text.');
+        }
+
+        onProgress?.call(0.20, 'Analyzing PDF page ${safePageIndex + 1} of $totalPages (20%)...');
+
         // Try text extraction on the selected page
         final PdfTextExtractor extractor = PdfTextExtractor(document);
         final pageText = extractor.extractText(startPageIndex: safePageIndex, endPageIndex: safePageIndex);
-        debugPrint('--- Extracted Page ${safePageIndex + 1} Text (${pageText.length} chars) ---');
-        debugPrint('=== RAW PAGE TEXT ===\n$pageText\n=== END RAW PAGE TEXT ===');
+        PdfDiagnosticLogger.log('PDF_PAGE', 'Page ${safePageIndex + 1}: extracted ${pageText.length} characters (${pageText.split('\n').length} lines)');
+
+        if (pageText.trim().isNotEmpty) {
+          final preview = pageText.length > 300 ? '${pageText.substring(0, 300)}...' : pageText;
+          PdfDiagnosticLogger.log('PAGE_SAMPLE', 'Page ${safePageIndex + 1} text preview:\n$preview');
+        } else {
+          PdfDiagnosticLogger.log('PDF_PAGE', 'Page ${safePageIndex + 1} has 0 extractable characters.');
+        }
 
         if (pageText.trim().length > 30) {
           final parsed = GarmentTableParser.parse(pageText, fallbackStyle: fallbackName);
@@ -136,10 +165,12 @@ class PdfScannerService {
           if (parsed.sizes.length >= 2 &&
               parsed.poms.length >= 2 &&
               parsed.poms.any((p) => p.sizeSpecs.isNotEmpty)) {
-            debugPrint('Local digital table parser succeeded on page ${safePageIndex + 1} with ${parsed.poms.length} POMs and ${parsed.sizes.length} sizes: ${parsed.sizes}');
+            PdfDiagnosticLogger.log('SUCCESS', 'Page ${safePageIndex + 1} measurement table accepted: ${parsed.poms.length} POMs, ${parsed.sizes.length} sizes: ${parsed.sizes}');
             document.dispose();
             onProgress?.call(1.0, 'Complete! (100%)');
             return parsed;
+          } else {
+            PdfDiagnosticLogger.log('PAGE_REJECT', 'Page ${safePageIndex + 1} did not qualify as a full measurement spec table: found ${parsed.sizes.length} sizes and ${parsed.poms.length} POM rows.');
           }
         }
 
@@ -150,37 +181,48 @@ class PdfScannerService {
             if (p == safePageIndex) continue;
             try {
               final altText = extractor.extractText(startPageIndex: p, endPageIndex: p);
+              PdfDiagnosticLogger.log('PAGE_SEARCH', 'Page ${p + 1}/$totalPages: ${altText.length} chars extracted');
               if (altText.trim().length > 30) {
                 final altParsed = GarmentTableParser.parse(altText, fallbackStyle: fallbackName);
                 if (altParsed.sizes.length >= 2 &&
                     altParsed.poms.length >= 2 &&
                     altParsed.poms.any((pom) => pom.sizeSpecs.isNotEmpty)) {
-                  debugPrint('Auto-detected measurement table on Page ${p + 1} of $totalPages with ${altParsed.poms.length} POMs and ${altParsed.sizes.length} sizes: ${altParsed.sizes}');
+                  PdfDiagnosticLogger.log('SUCCESS', 'Auto-detected measurement table on Page ${p + 1} of $totalPages with ${altParsed.poms.length} POMs and ${altParsed.sizes.length} sizes: ${altParsed.sizes}');
                   document.dispose();
                   onProgress?.call(1.0, 'Measurement specs auto-detected on Page ${p + 1}! (100%)');
                   return altParsed;
+                } else {
+                  PdfDiagnosticLogger.log('PAGE_REJECT', 'Page ${p + 1} rejected: found ${altParsed.sizes.length} sizes and ${altParsed.poms.length} POM rows.');
                 }
               }
-            } catch (_) {}
+            } catch (err) {
+              PdfDiagnosticLogger.log('PAGE_ERROR', 'Page ${p + 1} extraction error: $err');
+            }
           }
         }
 
-        // If local text parsing did not find a complete table, isolate ONLY the target page for Gemini Vision
-        onProgress?.call(0.35, 'Optimizing page ${safePageIndex + 1} of $totalPages for fast AI scan (35%)...');
-        for (int i = document.pages.count - 1; i >= 0; i--) {
-          if (i != safePageIndex) {
-            document.pages.removeAt(i);
-          }
+        // If local text parsing did not find a complete table, diagnose
+        String failureSummary;
+        if (!hasFontObjects) {
+          failureSummary = 'This PDF contains 0 digital font objects. It consists of vector path outlines (CAD Bézier curves) or scanned photos. Standard text extractors cannot read characters without fonts.\n\nRecommendation: Upload the original digital tech pack PDF (containing text) or an Excel (.xlsx / .csv) sheet for instant offline parsing.';
+        } else if (pageText.trim().length < 30 && totalPages == 1) {
+          failureSummary = 'Page 1 has only ${pageText.trim().length} extractable digital characters. No measurement table could be detected.\n\nRecommendation: Check if the tech pack has other pages, or upload an Excel (.xlsx / .csv) file.';
+        } else {
+          failureSummary = 'Scanned $totalPages page(s) but no measurement table matching size headers (e.g. S, M, L or 30, 32, 34) and POM rows was found.\n\nRecommendation: Verify the PDF contains a size specification table, or import an Excel (.xlsx / .csv) file.';
         }
-        bytesToScan = Uint8List.fromList(document.saveSync());
+
+        PdfDiagnosticLogger.setSummary(failureSummary);
+        PdfDiagnosticLogger.log('SCANNER_FAIL', failureSummary);
         document.dispose();
-        debugPrint('Optimized single-page PDF size: ${(bytesToScan.length / 1024).toStringAsFixed(1)} KB (down from ${(bytes.length / 1024).toStringAsFixed(1)} KB)');
+        throw ScannedPdfNeedsVisionException(failureSummary);
       } catch (e) {
-        debugPrint('PDF page isolation note: $e');
+        if (e is ScannedPdfNeedsVisionException) rethrow;
+        PdfDiagnosticLogger.log('PDF_ERROR', 'PDF extraction exception: $e');
+        rethrow;
       }
     }
 
-    // 2. Scan the isolated page with Gemini Vision (Fast & lightweight)
+    // 2. Image files or non-PDF documents (fallback with optional AI Vision if configured)
     final savedKey = await getSavedApiKey();
     final effectiveApiKey = (geminiApiKey != null && geminiApiKey.trim().isNotEmpty)
         ? geminiApiKey.trim()
@@ -188,29 +230,22 @@ class PdfScannerService {
 
     if (effectiveApiKey.isNotEmpty) {
       try {
-        onProgress?.call(0.60, 'AI Vision scanning measurement table (60%)...');
-        debugPrint('Starting Gemini Vision parse with high-speed models on single page...');
-        final parsed = await _parseWithGemini(bytesToScan, ext, effectiveApiKey, fallbackName);
+        onProgress?.call(0.60, 'Scanning measurement table with AI Vision (60%)...');
+        PdfDiagnosticLogger.log('AI_VISION', 'Scanning image document with AI Vision...');
+        final parsed = await _parseWithGemini(bytes, ext, effectiveApiKey, fallbackName);
         if (parsed != null) {
-          onProgress?.call(0.95, 'Formatting 5-sample inspection sheet (95%)...');
+          onProgress?.call(0.95, 'Formatting inspection sheet (95%)...');
           return parsed;
         }
       } catch (e) {
-        debugPrint('Gemini parsing failed: $e');
+        PdfDiagnosticLogger.log('AI_VISION_ERR', 'Vision parsing failed: $e');
         rethrow;
       }
     }
 
-    // 3. Fallback if no digital text streams available
-    if (ext == 'pdf') {
-      throw ScannedPdfNeedsVisionException(
-        'Scanned or vector-outlined PDF detected. This PDF does not contain digital text streams. Please upload the original digital tech pack PDF or Excel (.xlsx / .csv) sheet.',
-      );
-    } else {
-      throw ScannedPdfNeedsVisionException(
-        'Image files (PNG/JPG) do not contain digital text streams. Please upload the original digital tech pack PDF or Excel (.xlsx / .csv) sheet.',
-      );
-    }
+    throw ScannedPdfNeedsVisionException(
+      'Image files (PNG/JPG) do not contain digital text streams. Please upload the original digital tech pack PDF or Excel (.xlsx / .csv) sheet.',
+    );
   }
 
   /// Supported high-availability Gemini models in order of priority

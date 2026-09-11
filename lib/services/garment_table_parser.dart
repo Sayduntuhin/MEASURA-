@@ -1,5 +1,6 @@
 import 'package:uuid/uuid.dart';
 import '../models/spec_sheet_model.dart';
+import 'pdf_diagnostic_logger.dart';
 
 class GarmentTableParser {
   static const Uuid _uuid = Uuid();
@@ -19,12 +20,18 @@ class GarmentTableParser {
 
   /// Parses raw extracted PDF text into a structured GarmentSpecSheet
   static GarmentSpecSheet parse(String rawText, {String fallbackStyle = 'Uploaded Spec'}) {
+    PdfDiagnosticLogger.log('TABLE_PARSER', 'Parsing raw text (${rawText.length} chars)...');
+
     // 1. Check for stream-formatted tech pack tables (Wrangler / Kontoor / Gerber PLM)
     if (rawText.contains(RegExp(r'Description\|Variation', caseSensitive: false)) ||
         (rawText.contains('WAST 1') && (rawText.contains('INSM') || rawText.contains('OTST')))) {
+      PdfDiagnosticLogger.log('TABLE_PARSER', 'Detected stream tech pack format signature. Attempting stream parse...');
       final streamSheet = _parseStreamTechPack(rawText, fallbackStyle: fallbackStyle);
       if (streamSheet != null && streamSheet.sizes.length >= 2 && streamSheet.poms.length >= 2) {
+        PdfDiagnosticLogger.log('TABLE_PARSER', 'Stream parsing SUCCESS: ${streamSheet.sizes.length} sizes (${streamSheet.sizes.join(", ")}), ${streamSheet.poms.length} POM rows');
         return streamSheet;
+      } else {
+        PdfDiagnosticLogger.log('TABLE_PARSER', 'Stream parse yielded insufficient specs (sizes=${streamSheet?.sizes.length ?? 0}, poms=${streamSheet?.poms.length ?? 0}). Falling back to line-by-line...');
       }
     }
 
@@ -33,6 +40,8 @@ class GarmentTableParser {
         .map((l) => l.trim())
         .where((l) => l.isNotEmpty)
         .toList();
+
+    PdfDiagnosticLogger.log('TABLE_PARSER', 'Scanning ${lines.length} lines for size headers and POM rows...');
 
     String style = _extractStyle(lines) ?? fallbackStyle;
     String po = _extractPo(lines) ?? '';
@@ -67,6 +76,7 @@ class GarmentTableParser {
             pomsMap[pomKey] = parsedPom;
             pomCounter++;
           }
+          PdfDiagnosticLogger.log('POM_MATCH', 'Line ${i + 1}: #${parsedPom.no} ${parsedPom.pomCode} "${parsedPom.description}" -> ${parsedPom.sizeSpecs}');
           continue;
         }
       }
@@ -74,6 +84,7 @@ class GarmentTableParser {
       // Check if line is a Size Header line
       final detectedSizes = _detectSizeHeaderLine(line);
       if (detectedSizes.length >= 2) {
+        PdfDiagnosticLogger.log('HEADER_MATCH', 'Line ${i + 1}: Size header detected -> [${detectedSizes.join(", ")}] (from "$line")');
         currentSizes = detectedSizes;
         for (final s in currentSizes) {
           if (!allSizes.contains(s)) {
@@ -87,6 +98,8 @@ class GarmentTableParser {
     // Only return poms if real sizes and real POM rows were matched
     final pomsList = pomsMap.values.toList();
     pomsList.sort((a, b) => a.no.compareTo(b.no));
+
+    PdfDiagnosticLogger.log('TABLE_PARSER', 'Summary: extracted ${allSizes.length} sizes (${allSizes.join(", ")}), ${pomsList.length} POM rows with specs.');
 
     return GarmentSpecSheet(
       id: _uuid.v4(),
