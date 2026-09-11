@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:uuid/uuid.dart';
 import '../models/spec_sheet_model.dart';
@@ -21,6 +22,34 @@ class PdfScannerService {
 
   /// Default Gemini Vision API key (can be supplied via --dart-define=GEMINI_API_KEY=xxx)
   static const String kDefaultGeminiApiKey = String.fromEnvironment('GEMINI_API_KEY', defaultValue: '');
+  static String _memoryApiKey = '';
+
+  /// Retrieves user-saved Gemini API key (from disk or memory)
+  static Future<String> getSavedApiKey() async {
+    if (_memoryApiKey.isNotEmpty) return _memoryApiKey;
+    if (kIsWeb) return kDefaultGeminiApiKey;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/gemini_key.txt');
+      if (await file.exists()) {
+        final key = (await file.readAsString()).trim();
+        _memoryApiKey = key;
+        return key;
+      }
+    } catch (_) {}
+    return kDefaultGeminiApiKey;
+  }
+
+  /// Saves user Gemini API key to disk for future scans
+  static Future<void> saveApiKey(String key) async {
+    _memoryApiKey = key.trim();
+    if (kIsWeb) return;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/gemini_key.txt');
+      await file.writeAsString(key.trim());
+    } catch (_) {}
+  }
 
   /// Picks a document (PDF, Excel, CSV, or image) from the device.
   Future<PlatformFile?> pickDocument() async {
@@ -107,10 +136,32 @@ class PdfScannerService {
           if (parsed.sizes.length >= 2 &&
               parsed.poms.length >= 2 &&
               parsed.poms.any((p) => p.sizeSpecs.isNotEmpty)) {
-            debugPrint('Local digital table parser succeeded with ${parsed.poms.length} POMs and ${parsed.sizes.length} sizes: ${parsed.sizes}');
+            debugPrint('Local digital table parser succeeded on page ${safePageIndex + 1} with ${parsed.poms.length} POMs and ${parsed.sizes.length} sizes: ${parsed.sizes}');
             document.dispose();
             onProgress?.call(1.0, 'Complete! (100%)');
             return parsed;
+          }
+        }
+
+        // If the selected page didn't contain a measurement table, automatically check other pages!
+        if (totalPages > 1) {
+          onProgress?.call(0.28, 'Searching other pages for measurement specs... (28%)');
+          for (int p = 0; p < totalPages; p++) {
+            if (p == safePageIndex) continue;
+            try {
+              final altText = extractor.extractText(startPageIndex: p, endPageIndex: p);
+              if (altText.trim().length > 30) {
+                final altParsed = GarmentTableParser.parse(altText, fallbackStyle: fallbackName);
+                if (altParsed.sizes.length >= 2 &&
+                    altParsed.poms.length >= 2 &&
+                    altParsed.poms.any((pom) => pom.sizeSpecs.isNotEmpty)) {
+                  debugPrint('Auto-detected measurement table on Page ${p + 1} of $totalPages with ${altParsed.poms.length} POMs and ${altParsed.sizes.length} sizes: ${altParsed.sizes}');
+                  document.dispose();
+                  onProgress?.call(1.0, 'Measurement specs auto-detected on Page ${p + 1}! (100%)');
+                  return altParsed;
+                }
+              }
+            } catch (_) {}
           }
         }
 
@@ -130,9 +181,10 @@ class PdfScannerService {
     }
 
     // 2. Scan the isolated page with Gemini Vision (Fast & lightweight)
+    final savedKey = await getSavedApiKey();
     final effectiveApiKey = (geminiApiKey != null && geminiApiKey.trim().isNotEmpty)
         ? geminiApiKey.trim()
-        : kDefaultGeminiApiKey;
+        : savedKey;
 
     if (effectiveApiKey.isNotEmpty) {
       try {

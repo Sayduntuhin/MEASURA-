@@ -3,6 +3,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import '../models/tolerance_standard.dart';
+import '../services/garment_table_parser.dart';
 import '../services/pdf_scanner_service.dart';
 import '../theme/app_theme.dart';
 import 'spec_review_screen.dart';
@@ -29,6 +30,8 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
     final file = await _scannerService.pickDocument();
     if (file != null) {
       int pages = 1;
+      int detectedPage = 1;
+      String? detectedNotice;
       final ext = (file.extension ?? '').toLowerCase();
       if (ext == 'pdf') {
         try {
@@ -36,6 +39,22 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
           if (bytes != null && bytes.isNotEmpty) {
             final doc = PdfDocument(inputBytes: bytes);
             pages = doc.pages.count;
+            final extractor = PdfTextExtractor(doc);
+            for (int p = 0; p < pages; p++) {
+              try {
+                final txt = extractor.extractText(startPageIndex: p, endPageIndex: p);
+                if (txt.length > 30) {
+                  final parsed = GarmentTableParser.parse(txt);
+                  if (parsed.sizes.length >= 2 &&
+                      parsed.poms.length >= 2 &&
+                      parsed.poms.any((pom) => pom.sizeSpecs.isNotEmpty)) {
+                    detectedPage = p + 1;
+                    detectedNotice = 'Measurement table detected on Page ${p + 1} (${parsed.poms.length} POMs, ${parsed.sizes.length} sizes)';
+                    break;
+                  }
+                }
+              } catch (_) {}
+            }
             doc.dispose();
           }
         } catch (_) {}
@@ -44,9 +63,96 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
       setState(() {
         _selectedFile = file;
         _totalPages = pages;
-        _selectedPage = 1;
+        _selectedPage = detectedPage;
       });
+
+      if (detectedNotice != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.auto_awesome, color: Colors.amber, size: 20),
+                const SizedBox(width: 10),
+                Expanded(child: Text(detectedNotice)),
+              ],
+            ),
+            duration: const Duration(seconds: 4),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        );
+      }
     }
+  }
+
+  Future<void> _showApiKeyDialog() async {
+    final currentKey = await PdfScannerService.getSavedApiKey();
+    if (!mounted) return;
+    final controller = TextEditingController(text: currentKey);
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.key_rounded, color: AppColors.primaryBlue),
+            SizedBox(width: 10),
+            Text('AI Vision API Key', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Digital PDFs and Excel spreadsheets parse 100% offline.\n\nA Gemini API key is only needed for photo scans or flattened image PDFs.',
+              style: TextStyle(fontSize: 13, color: Colors.grey),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: controller,
+              decoration: InputDecoration(
+                labelText: 'Google AI Studio / Gemini Key',
+                hintText: 'AIzaSy...',
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              obscureText: true,
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Free keys available at aistudio.google.com',
+              style: TextStyle(fontSize: 11, color: AppColors.primaryBlue),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primaryBlue,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              await PdfScannerService.saveApiKey(controller.text.trim());
+              if (ctx.mounted) Navigator.pop(ctx);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(controller.text.trim().isEmpty ? 'API key removed.' : 'API key saved securely on device.'),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
+            },
+            child: const Text('Save Key'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _processFile({bool useExample = false}) async {
@@ -221,6 +327,13 @@ class _UploadSpecScreenState extends State<UploadSpecScreen> {
       backgroundColor: AppColors.background,
       appBar: AppBar(
         title: const Text('Import Tech Pack Spec'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.key_rounded),
+            tooltip: 'AI Vision Key (Optional)',
+            onPressed: _showApiKeyDialog,
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),

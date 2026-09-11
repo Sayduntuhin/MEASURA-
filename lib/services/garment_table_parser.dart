@@ -162,23 +162,30 @@ class GarmentTableParser {
 
   /// Detects if a line is a Size Header line, and returns the sizes
   static List<String> _detectSizeHeaderLine(String line) {
-    // Exclude obvious non-header lines or lines containing fractional measurement specs
-    final lower = line.toLowerCase();
-    if (lower.contains('created by') ||
-        lower.contains('page type') ||
-        lower.contains('approved by') ||
-        lower.contains('tech pack') ||
-        lower.contains('1/2') ||
-        lower.contains('1/4') ||
-        lower.contains('3/4') ||
-        lower.contains('3/8') ||
-        lower.contains('5/8') ||
-        lower.contains('7/8') ||
-        lower.contains('1/8')) {
+    final trimmed = line.trim();
+    final lower = trimmed.toLowerCase();
+    if (lower.startsWith('created by') ||
+        lower.startsWith('page type') ||
+        lower.startsWith('approved by') ||
+        lower.startsWith('qa inspection') ||
+        lower.startsWith('comments') ||
+        lower.startsWith('buyer:') ||
+        lower.startsWith('style:')) {
       return [];
     }
 
-    final tokens = line.split(RegExp(r'\s+'));
+    // A size header line NEVER has mixed fraction measurements like "29 1/2" or "41 1/8"
+    if (RegExp(r'\d+\s+(?:[1-9]|1[0-5])/(?:16|32|[248])\b').hasMatch(trimmed)) {
+      return [];
+    }
+
+    // A size header line NEVER starts with a row number and POM code like "1 WAST" or "2 SEAT"
+    if (RegExp(r'^\d+\s+[A-Z]{2,6}\b').hasMatch(trimmed)) {
+      return [];
+    }
+
+    // Split on whitespace, pipes, tabs, commas, semicolons
+    final tokens = trimmed.split(RegExp(r'[\s\|\t,;]+'));
     final sizes = <String>[];
 
     for (final token in tokens) {
@@ -194,35 +201,44 @@ class GarmentTableParser {
   }
 
   static bool _isSizeToken(String raw) {
-    final t = raw.toUpperCase();
+    final t = raw.toUpperCase().trim();
     if (t.isEmpty) return false;
 
-    // Reject non-size words
+    // Reject non-size words and common header labels
     const nonSizes = {
       'POM', 'CODE', 'NO', 'NO.', 'DESCRIPTION', 'DESC', 'TOL', 'TOLERANCE',
       'SPEC', 'SPECS', 'GRADE', 'SAMPLE', 'SMP', 'COMMENTS', 'MIN', 'MAX',
       'DIFF', 'NAME', 'TOTAL', 'QTY', 'QUANTITY', 'BUYER', 'BRAND', 'STYLE',
       'COLOR', 'SEASON', 'DATE', 'PAGE', 'OF', 'INCH', 'INCHES', 'CM', 'MM',
-      'ITEM', 'FIT', 'FABRIC', 'WASH', 'STATUS', 'VERSION', 'POINT'
+      'ITEM', 'FIT', 'FABRIC', 'WASH', 'STATUS', 'VERSION', 'POINT', 'SIZE', 'SIZES',
+      'RANGE', 'CRITICAL', 'METHOD', 'REMARKS', 'NOTES', 'STAGE'
     };
     if (nonSizes.contains(t)) return false;
+
+    // Fractions like 1/2, 1/4, 3/8, 5/8 are tolerance/measurements, not sizes
+    // (Apparel fraction denominators are 2, 4, 8, 16, 32 with numerators < 16)
+    if (RegExp(r'^(?:[1-9]|1[0-5])/(?:16|32|[248])$').hasMatch(t)) return false;
 
     // Waist/Inseam combinations: 30/30, 32x30, 34-32, 30X30, 32/34
     if (RegExp(r'^\d{2}[/xX\-]\d{2}$').hasMatch(t)) return true;
 
-    // Standard Alpha sizes: XXS, XS, S, M, L, XL, XXL, 1X..5X, 1XL..5XL, 2XL..5XL
-    if (RegExp(r'^(XXS|XS|S|M|L|XL|XXL|[1-5]XL|[1-5]X)$').hasMatch(t)) return true;
+    // Standard Alpha sizes: XXS, XS, S, M, L, XL, XXL, 1X..5X, 1XL..6XL, 2XL..6XL
+    if (RegExp(r'^(XXS|XS|S|M|L|XL|XXL|[1-6]XL|[1-6]X)$').hasMatch(t)) return true;
 
-    // Dual sizes: XS/S, S/M, M/L, L/XL
+    // Dual sizes: XS/S, S/M, M/L, L/XL, XL/XXL
     if (RegExp(r'^(XS/S|S/M|M/L|L/XL|XL/XXL|XL/2XL)$').hasMatch(t)) return true;
+
+    // Sizes with fit/length suffix: 30W, 32W, 30L, 32L, 30R, 32R, 30S, 32S
+    if (RegExp(r'^\d{2}[WRLST]$').hasMatch(t)) return true;
 
     // Children / Toddler sizes: 2T, 3T, 4T, 5T, 4R, 6R, 8R, 10R
     if (RegExp(r'^\d{1,2}[TR]$').hasMatch(t)) return true;
 
-    // Numeric sizes: waist sizes 24 to 56, or women's even sizes 0 to 22
+    // Numeric sizes: 0, 00, 2..22 (women's), or 20..60 (men's waist/unisex), or 92..176 (EUR heights)
+    if (t == '0' || t == '00') return true;
     final n = int.tryParse(t);
     if (n != null) {
-      if ((n >= 24 && n <= 56) || (n >= 0 && n <= 22 && n % 2 == 0)) {
+      if ((n >= 2 && n <= 22 && n % 2 == 0) || (n >= 20 && n <= 60) || (n >= 92 && n <= 176 && n % 6 == 2)) {
         return true;
       }
     }
@@ -437,9 +453,29 @@ class GarmentTableParser {
 
       // Extract style name / PO
       String style = fallbackStyle;
-      final perMatch = RegExp(r'PER\s+(\d{4,8})', caseSensitive: false).firstMatch(raw);
-      if (perMatch != null && perMatch.group(1) != null) {
-        style = 'Style ${perMatch.group(1)}';
+      final styleMatch = RegExp(r'\b([0-9]{2}[A-Z0-9]{5,15}[A-Z]?)\b').firstMatch(raw);
+      if (styleMatch != null && styleMatch.group(1) != null) {
+        style = styleMatch.group(1)!;
+      } else {
+        final perMatch = RegExp(r'PER\s+(\d{4,8})', caseSensitive: false).firstMatch(raw);
+        if (perMatch != null && perMatch.group(1) != null) {
+          style = 'Style ${perMatch.group(1)}';
+        }
+      }
+
+      String brand = 'Wrangler';
+      final lowerRaw = raw.toLowerCase();
+      if (lowerRaw.contains('rustler')) {
+        brand = 'Rustler';
+      } else if (lowerRaw.contains('lee')) {
+        brand = 'Lee';
+      }
+
+      String stage = 'Before Wash';
+      if (lowerRaw.contains('after wash')) {
+        stage = 'After Wash';
+      } else if (lowerRaw.contains('finished product')) {
+        stage = 'Finished Product';
       }
 
       final pomsList = pomsMap.values.toList()..sort((a, b) => a.no.compareTo(b.no));
@@ -448,8 +484,8 @@ class GarmentTableParser {
         id: _uuid.v4(),
         style: style,
         po: '',
-        brand: 'Wrangler',
-        stage: 'Before Wash',
+        brand: brand,
+        stage: stage,
         date: DateTime.now(),
         tolerance: 0.25,
         sampleCountPerSize: 5,
