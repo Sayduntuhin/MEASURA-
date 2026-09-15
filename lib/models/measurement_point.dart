@@ -63,10 +63,10 @@ String formatDeviation(double value) {
   if (value == 0) return '0';
   final sign = value < 0 ? '-' : '';
   final abs = value.abs();
-  if (abs == 1.0) return '${sign}1';
   final eighths = (abs * 8).round();
   final whole = eighths ~/ 8;
   final remainder = eighths % 8;
+  if (remainder == 0) return '$sign$whole';
   // Reduce the fraction (e.g. 4/8 -> 1/2, 2/8 -> 1/4).
   int num = remainder;
   int den = 8;

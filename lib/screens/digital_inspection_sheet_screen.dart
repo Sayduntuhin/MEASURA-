@@ -6,6 +6,7 @@ import '../services/excel_export_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/interactive_histogram.dart';
 import '../widgets/quick_deviation_sheet.dart';
+import '../widgets/custom_measurement_dialog.dart';
 import 'scan_web_qr_screen.dart';
 
 class DigitalInspectionSheetScreen extends StatefulWidget {
@@ -254,6 +255,7 @@ class _DigitalInspectionSheetScreenState
     required int sampleIndex,
     double? currentDeviation,
   }) {
+    final reading = _specSheet.getReading(pomCode, size, sampleIndex);
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -267,13 +269,93 @@ class _DigitalInspectionSheetScreenState
         tolerance: _specSheet.tolerance,
         pomTolerance: _specSheet.getPomTolerance(pomCode, size: size),
         currentDeviation: currentDeviation,
+        currentDeviationText: reading?.deviationText,
         advanceTopToBottom: _advanceTopToBottom,
         onToggleAdvanceDirection: () => setState(() => _advanceTopToBottom = !_advanceTopToBottom),
+        onOpenKeyboard: () {
+          Navigator.pop(ctx);
+          _openCustomKeyboardDialog(pomCode, size, sampleIndex);
+        },
         onSelect: (dev, txt) =>
             _recordSample(pomCode, size, sampleIndex, dev, txt),
         onClear: () => _clearSample(pomCode, size, sampleIndex),
       ),
     );
+  }
+
+  void _openCustomKeyboardDialog(String pomCode, String size, int sampleIndex) {
+    final pomRow = _specSheet.poms.firstWhere((p) => p.pomCode == pomCode);
+    final specVal = pomRow.sizeSpecs[size] ?? '-';
+    final currentReading = _specSheet.getReading(pomCode, size, sampleIndex);
+
+    if (_dockKeypad) {
+      setState(() {
+        _activePomCode = pomCode;
+        _activeSize = size;
+        _activeSampleIndex = sampleIndex;
+        _focusedSize = size;
+      });
+    }
+
+    CustomMeasurementDialog.show(
+      context,
+      pomCode: pomCode,
+      description: pomRow.description,
+      size: size,
+      specValue: specVal,
+      sampleIndex: sampleIndex,
+      currentDeviation: currentReading?.deviation,
+      currentDeviationText: currentReading?.deviationText,
+      tolerance: _specSheet.tolerance,
+      pomTolerance: _specSheet.getPomTolerance(pomCode, size: size),
+      advanceTopToBottom: _advanceTopToBottom,
+      onSave: (dev, txt) => _recordSample(pomCode, size, sampleIndex, dev, txt),
+      onSaveAndNext: (dev, txt) {
+        _recordSample(pomCode, size, sampleIndex, dev, txt);
+        _advanceToNextCellForKeyboard(pomCode, size, sampleIndex);
+      },
+      onClear: () => _clearSample(pomCode, size, sampleIndex),
+    );
+  }
+
+  void _advanceToNextCellForKeyboard(String pomCode, String size, int sampleIndex) {
+    String nextPom = pomCode;
+    int nextSample = sampleIndex;
+    String nextSize = size;
+
+    if (_advanceTopToBottom) {
+      final currentPomIdx = _specSheet.poms.indexWhere((p) => p.pomCode == pomCode);
+      if (currentPomIdx >= 0 && currentPomIdx < _specSheet.poms.length - 1) {
+        nextPom = _specSheet.poms[currentPomIdx + 1].pomCode;
+      } else if (sampleIndex < _specSheet.sampleCountPerSize) {
+        nextPom = _specSheet.poms.isNotEmpty ? _specSheet.poms.first.pomCode : pomCode;
+        nextSample = sampleIndex + 1;
+      } else {
+        final currentSizeIdx = _specSheet.sizes.indexOf(size);
+        if (currentSizeIdx >= 0 && currentSizeIdx < _specSheet.sizes.length - 1) {
+          nextSize = _specSheet.sizes[currentSizeIdx + 1];
+          nextPom = _specSheet.poms.isNotEmpty ? _specSheet.poms.first.pomCode : pomCode;
+          nextSample = 1;
+        }
+      }
+    } else {
+      if (sampleIndex < _specSheet.sampleCountPerSize) {
+        nextSample = sampleIndex + 1;
+      } else {
+        final currentPomIdx = _specSheet.poms.indexWhere((p) => p.pomCode == pomCode);
+        if (currentPomIdx >= 0 && currentPomIdx < _specSheet.poms.length - 1) {
+          nextPom = _specSheet.poms[currentPomIdx + 1].pomCode;
+          nextSample = 1;
+        }
+      }
+    }
+
+    if (nextPom != pomCode || nextSample != sampleIndex || nextSize != size) {
+      Future.delayed(const Duration(milliseconds: 160), () {
+        if (!mounted) return;
+        _openCustomKeyboardDialog(nextPom, nextSize, nextSample);
+      });
+    }
   }
 
   /// Interactive Inspection Summary with Embedded Real-time Histogram (Page 2 request: POM-specific histogram)
@@ -1393,7 +1475,7 @@ class _DigitalInspectionSheetScreenState
                             Flexible(
                               child: Text(
                                 _dockKeypad
-                                    ? 'Frozen keypad active at bottom: tap cell to inspect'
+                                    ? 'Tap cell to inspect • Tap again or ⌨️ to edit'
                                     : 'Tap any cell to enter deviation',
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
@@ -1451,6 +1533,36 @@ class _DigitalInspectionSheetScreenState
                         ),
                       ),
                     ),
+                    if (_dockKeypad && _activePomCode != null && _activeSize != null && _activeSampleIndex != null) ...[
+                      const SizedBox(width: 8),
+                      InkWell(
+                        onTap: () => _openCustomKeyboardDialog(_activePomCode!, _activeSize!, _activeSampleIndex!),
+                        borderRadius: BorderRadius.circular(6),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF6FF),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(color: const Color(0xFF93C5FD)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.keyboard_alt_rounded, size: 13, color: AppColors.primaryBlue),
+                              SizedBox(width: 3),
+                              Text(
+                                'Edit (⌨️)',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                  color: AppColors.primaryBlue,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
                     const SizedBox(width: 8),
                     Text(
                       '$totalReadings recorded',
@@ -1536,8 +1648,10 @@ class _DigitalInspectionSheetScreenState
               tolerance: _specSheet.tolerance,
               pomTolerance: _specSheet.getPomTolerance(_activePomCode!, size: _activeSize),
               currentDeviation: _specSheet.getReading(_activePomCode!, _activeSize!, _activeSampleIndex!)?.deviation,
+              currentDeviationText: _specSheet.getReading(_activePomCode!, _activeSize!, _activeSampleIndex!)?.deviationText,
               advanceTopToBottom: _advanceTopToBottom,
               onToggleAdvanceDirection: () => setState(() => _advanceTopToBottom = !_advanceTopToBottom),
+              onOpenKeyboard: () => _openCustomKeyboardDialog(_activePomCode!, _activeSize!, _activeSampleIndex!),
               onSelect: (dev, txt) => _recordSample(_activePomCode!, _activeSize!, _activeSampleIndex!, dev, txt),
               onClear: () => _clearSample(_activePomCode!, _activeSize!, _activeSampleIndex!),
             )
@@ -1877,40 +1991,67 @@ class _DigitalInspectionSheetScreenState
     }
 
     return InkWell(
-      onTap: () => _onCellTapped(pomCode, size, sampleIndex),
-      child: Container(
-        width: width,
-        height: double.infinity,
+      onTap: () {
+        if (_dockKeypad && isActive) {
+          // If cell is already active and tapped again, directly open keyboard edit dialog!
+          _openCustomKeyboardDialog(pomCode, size, sampleIndex);
+        } else {
+          _onCellTapped(pomCode, size, sampleIndex);
+        }
+      },
+      onDoubleTap: () => _openCustomKeyboardDialog(pomCode, size, sampleIndex),
+      onLongPress: () => _openCustomKeyboardDialog(pomCode, size, sampleIndex),
+      child: Stack(
         alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: cellBg,
-          border: isActive
-              ? Border.all(color: AppColors.primaryBlue, width: 2.2)
-              : const Border(left: BorderSide(color: AppColors.borderLight)),
-        ),
-        child: hasReading
-            ? FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 2),
-                  child: Text(
-                    reading.deviationText,
+        children: [
+          Container(
+            width: width,
+            height: double.infinity,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: cellBg,
+              border: isActive
+                  ? Border.all(color: AppColors.primaryBlue, width: 2.2)
+                  : const Border(left: BorderSide(color: AppColors.borderLight)),
+            ),
+            child: hasReading
+                ? FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: Text(
+                        reading.deviationText,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                          color: textColor,
+                        ),
+                      ),
+                    ),
+                  )
+                : Text(
+                    '·',
                     style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w900,
-                      color: textColor,
+                      fontSize: 16,
+                      color: isActive ? AppColors.primaryBlue : Colors.grey.shade300,
+                      fontWeight: isActive ? FontWeight.w900 : FontWeight.normal,
                     ),
                   ),
+          ),
+          if (isActive)
+            Positioned(
+              top: 1,
+              right: 1,
+              child: Container(
+                padding: const EdgeInsets.all(1.5),
+                decoration: const BoxDecoration(
+                  color: AppColors.primaryBlue,
+                  borderRadius: BorderRadius.only(bottomLeft: Radius.circular(3)),
                 ),
-              )
-            : Text(
-                '·',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: isActive ? AppColors.primaryBlue : Colors.grey.shade300,
-                  fontWeight: isActive ? FontWeight.w900 : FontWeight.normal,
-                ),
+                child: const Icon(Icons.edit, size: 7, color: Colors.white),
               ),
+            ),
+        ],
       ),
     );
   }

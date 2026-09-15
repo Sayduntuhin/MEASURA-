@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -666,14 +666,27 @@ class ExcelExportService {
       );
 
       final bytes = await generateExcelBytes(specSheet, selectedSizes: selectedSizes);
-      final tempDir = await getTemporaryDirectory();
-
       final cleanStyle = specSheet.style.replaceAll(RegExp(r'[^\w\-]'), '_');
       final cleanPo = specSheet.po.replaceAll(RegExp(r'[^\w\-]'), '_');
       final fileName = cleanPo.isNotEmpty
           ? 'MEASURA_${cleanStyle}_PO_$cleanPo.xlsx'
           : 'MEASURA_${cleanStyle}_Inspection.xlsx';
 
+      if (kIsWeb) {
+        final xFile = XFile.fromData(
+          Uint8List.fromList(bytes),
+          name: fileName,
+          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        );
+        await Share.shareXFiles(
+          [xFile],
+          text: 'MEASURA Garment Measurement Sheet - Style: ${specSheet.style}',
+          subject: 'Garment Inspection Report - ${specSheet.style}',
+        );
+        return;
+      }
+
+      final tempDir = await getTemporaryDirectory();
       final file = File('${tempDir.path}/$fileName');
       await file.writeAsBytes(bytes, flush: true);
 

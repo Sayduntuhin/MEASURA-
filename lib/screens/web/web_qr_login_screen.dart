@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../services/qr_auth_service.dart';
 import '../../theme/app_theme.dart';
+import '../login_screen.dart';
 import 'web_inspection_workspace.dart';
 
 class WebQrLoginScreen extends StatefulWidget {
@@ -259,6 +260,58 @@ class _WebQrLoginScreenState extends State<WebQrLoginScreen> {
             const Text(
               'Keep me signed in on this computer',
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF334155)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        const Divider(color: Color(0xFFE2E8F0)),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.login_rounded, size: 16),
+                label: const Text('Sign In with Account', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  side: const BorderSide(color: Color(0xFFCBD5E1)),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                onPressed: () {
+                  Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoginScreen()));
+                },
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.laptop_chromebook_rounded, size: 16),
+                label: const Text('Launch Full Suite', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primaryBlue,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                onPressed: () {
+                  Navigator.of(context).pushReplacement(
+                    MaterialPageRoute(
+                      builder: (_) => WebInspectionWorkspace(
+                        session: QrAuthSession(
+                          sessionId: 'web_direct_${DateTime.now().millisecondsSinceEpoch}',
+                          secretToken: 'token_${DateTime.now().millisecondsSinceEpoch}',
+                          status: QrSessionStatus.approved,
+                          createdAt: DateTime.now(),
+                          expiresAt: DateTime.now().add(const Duration(days: 30)),
+                          userId: 'web_user',
+                          userEmail: 'Web Inspector',
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
           ],
         ),
